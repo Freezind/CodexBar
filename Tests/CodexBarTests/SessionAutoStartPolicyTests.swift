@@ -140,11 +140,72 @@ struct SessionAutoStarterTests {
         #expect(codex.first == "exec")
         #expect(codex.contains("--ephemeral"))
         #expect(codex.contains("--skip-git-repo-check"))
+        #expect(codex.contains("--ignore-user-config"))
+        #expect(codex.contains("forced_login_method=\"chatgpt\""))
+        #expect(codex.contains("model_provider=\"openai\""))
         #expect(codex.last == SessionAutoStarter.prompt)
 
         let claude = SessionAutoStarter.arguments(for: .claude, workingDirectory: "/tmp/x")
         #expect(claude.prefix(2) == ["-p", SessionAutoStarter.prompt])
         #expect(claude.contains("--no-session-persistence"))
         #expect(!claude.contains("--bare"))
+    }
+}
+
+struct SessionAutoStartBillingGuardTests {
+    private static func data(_ json: String) -> Data {
+        Data(json.utf8)
+    }
+
+    @Test
+    func `codex chatgpt sign in is subscription auth`() {
+        #expect(SessionAutoStartBillingGuard.isCodexSubscriptionAuth(Self.data(
+            #"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{}}"#)))
+        #expect(SessionAutoStartBillingGuard.isCodexSubscriptionAuth(Self.data(#"{"tokens":{}}"#)))
+    }
+
+    @Test
+    func `codex api key or unreadable auth is refused`() {
+        #expect(!SessionAutoStartBillingGuard.isCodexSubscriptionAuth(Self.data(
+            #"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#)))
+        #expect(!SessionAutoStartBillingGuard.isCodexSubscriptionAuth(Self.data(
+            #"{"auth_mode":"chatgpt","OPENAI_API_KEY":"sk-test","tokens":{}}"#)))
+        #expect(!SessionAutoStartBillingGuard.isCodexSubscriptionAuth(Self.data(#"{}"#)))
+        #expect(!SessionAutoStartBillingGuard.isCodexSubscriptionAuth(Self.data("not json")))
+    }
+
+    @Test
+    func `claude requires first party claude ai sign in`() {
+        #expect(SessionAutoStartBillingGuard.isClaudeSubscriptionAuth(Self.data(
+            #"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}"#)))
+        #expect(!SessionAutoStartBillingGuard.isClaudeSubscriptionAuth(Self.data(
+            #"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty"}"#)))
+        #expect(!SessionAutoStartBillingGuard.isClaudeSubscriptionAuth(Self.data(
+            #"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"bedrock"}"#)))
+        #expect(!SessionAutoStartBillingGuard.isClaudeSubscriptionAuth(Self.data(
+            #"{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstParty"}"#)))
+    }
+
+    @Test
+    func `api routing variables are stripped per provider`() {
+        let env = [
+            "PATH": "/usr/bin",
+            "OPENAI_API_KEY": "sk-test",
+            "ANTHROPIC_API_KEY": "sk-ant-test",
+            "ANTHROPIC_BASE_URL": "https://proxy.example",
+        ]
+        let codex = SessionAutoStartBillingGuard.sanitizedEnvironment(env, for: .codex)
+        #expect(codex["OPENAI_API_KEY"] == nil)
+        #expect(codex["PATH"] == "/usr/bin")
+        let claude = SessionAutoStartBillingGuard.sanitizedEnvironment(env, for: .claude)
+        #expect(claude["ANTHROPIC_API_KEY"] == nil)
+        #expect(claude["ANTHROPIC_BASE_URL"] == nil)
+        #expect(claude["PATH"] == "/usr/bin")
+    }
+
+    @Test
+    func `codex auth file follows the scoped home`() {
+        let url = SessionAutoStartBillingGuard.codexAuthFileURL(environment: ["CODEX_HOME": "/tmp/managed-home"])
+        #expect(url.path.hasSuffix("managed-home/auth.json"))
     }
 }

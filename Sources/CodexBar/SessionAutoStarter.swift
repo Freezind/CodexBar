@@ -69,7 +69,8 @@ final class SessionAutoStarter {
 
     /// CLI stderr can echo account details, so failures log only the error category.
     nonisolated static func logSafeDescription(_ error: Error) -> String {
-        switch error as? SubprocessRunnerError {
+        if error is SessionAutoStartBillingGuard.Failure { return "not-subscription-auth" }
+        return switch error as? SubprocessRunnerError {
         case .binaryNotFound: "binary-not-found"
         case .launchFailed: "launch-failed"
         case .timedOut: "timed-out"
@@ -96,12 +97,17 @@ final class SessionAutoStarter {
                 "--output-format", "json",
             ]
         default:
+            // `config.toml` can route to another provider with its own credentials, so it is skipped and the
+            // built-in OpenAI provider is pinned to the ChatGPT sign-in.
             [
                 "exec",
                 "--skip-git-repo-check",
                 "--ephemeral",
+                "--ignore-user-config",
                 "--json",
                 "--sandbox", "read-only",
+                "-c", "model_provider=\"openai\"",
+                "-c", "forced_login_method=\"chatgpt\"",
                 "-c", "model_reasoning_effort=\"low\"",
                 "-C", workingDirectory,
                 self.prompt,
@@ -110,7 +116,7 @@ final class SessionAutoStarter {
     }
 
     nonisolated static func runCLI(provider: UsageProvider, environment: [String: String]) async throws {
-        var env = environment
+        var env = SessionAutoStartBillingGuard.sanitizedEnvironment(environment, for: provider)
         let loginPATH = LoginShellPathCache.shared.current
         env["PATH"] = PathBuilder.effectivePATH(
             purposes: [.rpc, .tty, .nodeTooling],
@@ -127,6 +133,11 @@ final class SessionAutoStarter {
         let workingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexbar-session-auto-start", isDirectory: true)
         try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+        try await Self.requireSubscriptionAuth(
+            provider: provider,
+            binary: binary,
+            environment: env,
+            workingDirectory: workingDirectory)
         _ = try await SubprocessRunner.run(
             binary: binary,
             arguments: Self.arguments(for: provider, workingDirectory: workingDirectory.path),
@@ -136,5 +147,32 @@ final class SessionAutoStarter {
             currentDirectoryURL: workingDirectory,
             reapDescendants: true,
             label: "\(provider.rawValue)-session-auto-start")
+    }
+
+    private nonisolated static func requireSubscriptionAuth(
+        provider: UsageProvider,
+        binary: String,
+        environment: [String: String],
+        workingDirectory: URL) async throws
+    {
+        // Provider-specific by design: each CLI exposes its sign-in method differently.
+        let isSubscription: Bool
+        if provider == .claude {
+            let status = try await SubprocessRunner.run(
+                binary: binary,
+                arguments: ["auth", "status", "--json"],
+                environment: environment,
+                timeout: 20,
+                standardInput: FileHandle.nullDevice,
+                currentDirectoryURL: workingDirectory,
+                acceptsNonZeroExit: true,
+                label: "claude-session-auto-start-auth")
+            isSubscription = SessionAutoStartBillingGuard.isClaudeSubscriptionAuth(Data(status.stdout.utf8))
+        } else {
+            let url = SessionAutoStartBillingGuard.codexAuthFileURL(environment: environment)
+            isSubscription = (try? Data(contentsOf: url)).map(SessionAutoStartBillingGuard.isCodexSubscriptionAuth)
+                ?? false
+        }
+        guard isSubscription else { throw SessionAutoStartBillingGuard.Failure.notSubscriptionAuth }
     }
 }
