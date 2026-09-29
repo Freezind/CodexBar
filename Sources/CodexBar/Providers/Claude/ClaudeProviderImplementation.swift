@@ -90,6 +90,7 @@ struct ClaudeProviderImplementation: ProviderImplementation {
         let claudeSwapShowSingleAccountBinding = context.binding(\.claudeSwapShowSingleAccount)
 
         return [
+            .sessionAutoStart(provider: .claude, cliName: "claude", context: context),
             ProviderSettingsToggleDescriptor(
                 id: "claude-workspace-spend",
                 title: "Show workspace spend",
