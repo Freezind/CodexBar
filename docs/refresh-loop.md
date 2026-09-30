@@ -93,7 +93,28 @@ read_when:
   read `UsageStore.normalRefreshIntervalForHeuristics()`, which resolves adaptive mode to the current decision's
   delay — they stay active in adaptive mode rather than degrading to manual, whose interval is nil.
 
-## Optional future
-- Auto-seed a log if none exists via `codex exec --skip-git-repo-check --json "ping"` (currently not executed).
+## Session auto-start (opt-in)
+- Codex and Claude each have an "Auto-start 5h session" provider toggle (`sessionAutoStartEnabled` in the provider
+  config), off by default.
+- After a successful refresh of the provider's default account (never token accounts), `SessionAutoStartPolicy`
+  decides whether the session lane reads as idle: Claude's synthetic placeholder lane, an elapsed reset, no reset
+  with 0% usage, or 0% usage while the reset is still a full window (±90 s) past the measurement time. Missing
+  primary lanes and non-5h lanes never start anything.
+- When idle, `SessionAutoStarter` sends one minimal prompt through the provider CLI from an empty scratch directory,
+  using the same provider environment (including the scoped `CODEX_HOME`) as the refresh:
+  - Codex: `codex exec --skip-git-repo-check --ephemeral --ignore-user-config --json --sandbox read-only
+    -c model_provider="openai" -c forced_login_method="chatgpt" -c model_reasoning_effort="low" "ping"`
+  - Claude: `claude -p "ping" --model haiku --tools "" --strict-mcp-config --disable-slash-commands --no-session-persistence`
+- Billing guard (`SessionAutoStartBillingGuard`): the ping only runs on a subscription sign-in, so it spends the
+  5-hour window the plan already includes and never creates per-request API charges.
+  - API-key and endpoint variables (`OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`,
+    `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`/`VERTEX`/`FOUNDRY`) are removed from
+    the child environment.
+  - Codex requires `$CODEX_HOME/auth.json` to hold a ChatGPT sign-in without a stored API key, skips `config.toml`
+    (which can route to another provider), and pins the built-in OpenAI provider to the ChatGPT login.
+  - Claude requires `claude auth status --json` to report `authMethod: claude.ai` on `apiProvider: firstParty`.
+  - A refused check counts as an attempt (30-minute cooldown) and logs `error=not-subscription-auth`.
+- Attempts (successful or failed) are rate-limited to once per 30 minutes per provider, in memory; a success
+  triggers a follow-up provider refresh after 20 s so the running window appears in the menu.
 
 See also: `docs/status.md`, `docs/ui.md`.

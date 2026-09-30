@@ -756,6 +756,10 @@ extension UsageStore {
                 provider: provider, settings: self.settings, store: self)
             runtime.providerDidRefresh(context: runtimeContext, provider: provider)
         }
+        self.evaluateSessionAutoStart(
+            provider: provider,
+            snapshot: backfilled,
+            isTokenAccountScoped: currentTokenAccount != nil)
         if provider == .codex {
             self.recordCodexHistoricalSampleIfNeeded(snapshot: backfilled)
         }
