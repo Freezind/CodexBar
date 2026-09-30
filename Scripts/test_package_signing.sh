@@ -86,7 +86,10 @@ import tempfile
 from pathlib import Path
 
 source = Path(sys.argv[1]).read_text()
-start = source.index('BUNDLE_ID="com.steipete.codexbar"')
+fork_env = (Path(sys.argv[1]).parent.parent / 'fork.env').read_text()
+FORK_BUNDLE_ID = next(
+    line.split('=', 1)[1].strip() for line in fork_env.splitlines() if line.startswith('FORK_BUNDLE_ID='))
+start = source.index('BUNDLE_ID="$FORK_BUNDLE_ID"')
 end = source.index('BUILD_TIMESTAMP=', start)
 generation = source[start:end]
 start = source.index('if [[ "$EMBED_PROVISIONING_PROFILE" == "1" ]]; then')
@@ -113,16 +116,18 @@ for team, configuration, signing, profile_present in itertools.product(
             profile.write_text('synthetic profile selection marker\n')
         env = dict(os.environ, ROOT=str(root), APP=str(app), APP_TEAM_ID=team,
                    LOWER_CONF=configuration, SIGNING_MODE=signing, ALLOW_LLDB='0',
+                   FORK_BUNDLE_ID=FORK_BUNDLE_ID,
                    APP_IDENTITY=f'Developer ID Application: Fixture ({team})')
         identity_stub = f'security() {{ echo \'  1) {"A" * 40} "{env["APP_IDENTITY"]}"\'; }}'
         result = subprocess.run(['bash', '-eu', '-c', identity_stub + '\n' + helper + '\n' + generation + '\n' + embedding],
                                 env=env, capture_output=True, text=True)
-        cloudkit = team == 'Y5PE65HELJ' and configuration == 'release' and signing == 'identity'
+        # The iCloud container belongs to upstream's bundle ID, so the fork's bundle never embeds it.
+        cloudkit = False
         if cloudkit and not profile_present:
             assert result.returncode != 0 and 'Missing' in result.stderr, result.stderr
             continue
         assert result.returncode == 0, (team, configuration, signing, profile_present, result.stderr)
-        bundle = 'com.steipete.codexbar' + ('.debug' if configuration == 'debug' else '')
+        bundle = FORK_BUNDLE_ID + ('.debug' if configuration == 'debug' else '')
         expected_group = f'{team}.{bundle}'
         app_entitlements = plistlib.loads((root / '.build/entitlements/CodexBar.entitlements').read_bytes())
         widget_entitlements = plistlib.loads((root / '.build/entitlements/CodexBarWidget.entitlements').read_bytes())
@@ -179,6 +184,7 @@ with tempfile.TemporaryDirectory(prefix='codexbar-identity-test-') as directory:
         case_root.mkdir()
         env = dict(os.environ, ROOT=str(case_root), LOWER_CONF=configuration, SIGNING_MODE='identity',
                    ALLOW_LLDB=lldb, APP_IDENTITY=identity, MOCK_IDENTITIES=identities,
+                   FORK_BUNDLE_ID=FORK_BUNDLE_ID,
                    MOCK_SECURITY_EXIT=str(query_exit), PATH=str(mock_bin) + os.pathsep + os.environ['PATH'])
         env.pop('APP_TEAM_ID', None)
         if override is not None:
@@ -195,7 +201,7 @@ with tempfile.TemporaryDirectory(prefix='codexbar-identity-test-') as directory:
         app_entitlements = plistlib.loads(app_path.read_bytes())
         widget_entitlements = plistlib.loads((app_path.parent / 'CodexBarWidget.entitlements').read_bytes())
         suffix = '.debug' if configuration == 'debug' else ''
-        expected_group = [f'{expected_team}.com.steipete.codexbar{suffix}']
+        expected_group = [f'{expected_team}.{FORK_BUNDLE_ID}{suffix}']
         expected_app = {'com.apple.security.application-groups': expected_group}
         if lldb == '1':
             expected_app['com.apple.security.get-task-allow'] = True

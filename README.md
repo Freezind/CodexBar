@@ -3,10 +3,13 @@
 > Every AI coding limit, in your menu bar.
 
 > [!IMPORTANT]
-> **This is an unofficial fork of [steipete/CodexBar](https://github.com/steipete/CodexBar) that will never be merged upstream.**
+> **This is AIUsageBar, an unofficial fork of [steipete/CodexBar](https://github.com/steipete/CodexBar) that will never be
+> merged upstream.** It ships under its own name (`AIUsageBar`, bundle ID `com.bonsai.aiusagebar`) so it can't be
+> mistaken for the official app. It can be installed next to the official app, but both read the same
+> `~/.config/codexbar/config.json` provider settings. Powered by Bonsai.
 >
 > It adds one feature on top of upstream: **opt-in 5-hour session auto-start** for Codex and Claude. When a 5h window is idle
-> or has reset, CodexBar sends one tiny `ping` through the provider's own CLI so the next window starts counting right away.
+> or has reset, AIUsageBar sends one tiny `ping` through the provider's own CLI so the next window starts counting right away.
 > The upstream maintainer has decided not to add recurring automatic prompts to CodexBar
 > ([#3653](https://github.com/steipete/CodexBar/pull/3653)), so this fork keeps the feature permanently and tracks upstream
 > for everything else.
@@ -14,8 +17,12 @@
 > - Off by default: Settings → Providers → Codex / Claude → **Auto-start 5h session**.
 > - Subscription only: the ping runs only on a ChatGPT / claude.ai sign-in and never on API keys, so it spends the window
 >   your plan already includes instead of per-request API billing. Details in [docs/refresh-loop.md](docs/refresh-loop.md#session-auto-start-opt-in).
-> - Build from source with `./Scripts/package_app.sh release`. The release badges, Homebrew tap, and download links below
->   point to the **official** upstream app, which does not include this feature.
+> - Download the signed and notarized Apple Silicon build from [Releases](https://github.com/Freezind/CodexBar/releases),
+>   or build from source with `./Scripts/package_app.sh release`. There are no automatic updates.
+> - The release badges, Homebrew tap, and download links below point to the **official** upstream app, which does not
+>   include this feature.
+> - For Claude usage via OAuth, add AIUsageBar to the Access Control list of the `Claude Code-credentials` item in
+>   Keychain Access; otherwise Claude usage falls back to the Claude CLI.
 > - Please report issues with this fork **here, not upstream**. All credit for CodexBar goes to
 >   [Peter Steinberger](https://github.com/steipete) and its contributors.
 >

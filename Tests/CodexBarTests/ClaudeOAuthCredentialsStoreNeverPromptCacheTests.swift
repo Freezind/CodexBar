@@ -470,7 +470,7 @@ struct ClaudeOAuthCredentialsStoreNeverPromptCacheTests {
         #expect(bundledCLIDomain == ClaudeOAuthKeychainPromptPreference.debugApplicationDefaultsDomain)
 
         let debugWidgetDomain = ClaudeOAuthKeychainPromptPreference.resolveApplicationDefaultsDomain(
-            bundleIdentifier: "com.steipete.codexbar.debug.widget",
+            bundleIdentifier: "\(AppBrand.debugBundleID).widget",
             bundleURL: nil,
             executableURL: nil,
             invocationURL: nil)

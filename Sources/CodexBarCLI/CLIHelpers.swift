@@ -210,8 +210,8 @@ extension CodexBarCLI {
 
     static func weeklyProgressWorkDaysFromDefaults() -> Int? {
         let domains = [
-            "com.steipete.codexbar",
-            "com.steipete.codexbar.debug",
+            AppBrand.releaseBundleID,
+            AppBrand.debugBundleID,
         ]
         for domain in domains {
             #if os(macOS)
@@ -256,7 +256,7 @@ extension CodexBarCLI {
     }
 
     static func valueFromAppDefaults<Value>(_ key: String) -> Value? {
-        for domain in ["com.steipete.codexbar", "com.steipete.codexbar.debug"] {
+        for domain in [AppBrand.releaseBundleID, AppBrand.debugBundleID] {
             #if os(macOS)
             let cfDomain = domain as CFString
             CFPreferencesSynchronize(cfDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
