@@ -24,13 +24,23 @@ enum SessionAutoStartPolicy {
         case recentlyAttempted
     }
 
-    static func decide(snapshot: UsageSnapshot, lastAttemptAt: Date?, now: Date) -> Decision {
+    /// - Parameter longerPrimaryMeansIdleSession: set when the provider promotes a longer lane into the primary
+    ///   slot only because no session lane is open (Claude omits `five_hour` while idle). Providers whose plans can
+    ///   lack a session lane entirely must leave it off.
+    static func decide(
+        snapshot: UsageSnapshot,
+        lastAttemptAt: Date?,
+        now: Date,
+        longerPrimaryMeansIdleSession: Bool = false) -> Decision
+    {
         if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < self.minimumAttemptInterval {
             return .skip(.recentlyAttempted)
         }
         guard let window = snapshot.primary else { return .skip(.noSessionWindow) }
         if let minutes = window.windowMinutes, minutes != self.sessionWindowMinutes {
-            return .skip(.notSessionLane)
+            return longerPrimaryMeansIdleSession && minutes > self.sessionWindowMinutes
+                ? .start
+                : .skip(.notSessionLane)
         }
         return self.isSessionIdle(window, measuredAt: snapshot.updatedAt) ? .start : .skip(.sessionRunning)
     }

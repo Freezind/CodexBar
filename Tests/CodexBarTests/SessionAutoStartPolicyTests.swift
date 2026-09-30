@@ -74,6 +74,19 @@ struct SessionAutoStartPolicyTests {
     }
 
     @Test
+    func `claude weekly lane promoted to primary means no open session`() {
+        let weeklyPrimary = Self.snapshot(usedPercent: 40, windowMinutes: 10080, resetsIn: 3 * 86400)
+        #expect(SessionAutoStartPolicy.decide(
+            snapshot: weeklyPrimary,
+            lastAttemptAt: nil,
+            now: Self.now,
+            longerPrimaryMeansIdleSession: true) == .start)
+        #expect(Self.decide(weeklyPrimary) == .skip(.notSessionLane))
+        #expect(SessionAutoStarter.longerPrimaryMeansIdleSession(.claude))
+        #expect(!SessionAutoStarter.longerPrimaryMeansIdleSession(.codex))
+    }
+
+    @Test
     func `recent attempt suppresses another start`() {
         let idle = Self.snapshot(resetsIn: nil)
         #expect(Self.decide(idle, lastAttemptAgo: 10 * 60) == .skip(.recentlyAttempted))

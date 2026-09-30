@@ -44,7 +44,8 @@ final class SessionAutoStarter {
         let decision = SessionAutoStartPolicy.decide(
             snapshot: snapshot,
             lastAttemptAt: self.lastAttemptAt[provider],
-            now: now)
+            now: now,
+            longerPrimaryMeansIdleSession: Self.longerPrimaryMeansIdleSession(provider))
         guard decision == .start else { return nil }
 
         self.lastAttemptAt[provider] = now
@@ -65,6 +66,13 @@ final class SessionAutoStarter {
                 self?.inFlight.remove(provider)
             }
         }
+    }
+
+    /// Claude's OAuth usage omits `five_hour` while no session is open, so the weekly lane is promoted to primary.
+    /// Codex plans without a session lane also report a weekly primary, so Codex must not treat it as idle.
+    nonisolated static func longerPrimaryMeansIdleSession(_ provider: UsageProvider) -> Bool {
+        // Provider-specific by design: only Claude promotes its weekly lane when the session lane is absent.
+        provider == .claude
     }
 
     /// CLI stderr can echo account details, so failures log only the error category.
