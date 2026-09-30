@@ -7,10 +7,47 @@ import Foundation
 enum SessionAutoStartBillingGuard {
     enum Failure: LocalizedError, Equatable {
         case notSubscriptionAuth
+        case accountMismatch
 
         var errorDescription: String? {
-            "The CLI is not signed in with a subscription; skipping to avoid per-request API billing."
+            switch self {
+            case .notSubscriptionAuth:
+                "The CLI is not signed in with a subscription; skipping to avoid per-request API billing."
+            case .accountMismatch:
+                "The CLI is signed in to a different account than the idle session; skipping."
+            }
         }
+    }
+
+    /// The ping runs as the CLI's signed-in account, while the idle decision came from CodexBar's snapshot. They can
+    /// diverge (a stale credentials file, a CLI login switch, an account-switching tool), and a ping would then open
+    /// another account's window. A snapshot without an email came from the CLI itself (Claude `/usage`), so it has
+    /// nothing to diverge from; otherwise the CLI must report the same email.
+    static func accountMatches(snapshotEmail: String?, cliEmail: String?) -> Bool {
+        guard let expected = self.normalizedEmail(snapshotEmail) else { return true }
+        return self.normalizedEmail(cliEmail) == expected
+    }
+
+    /// Email of the ChatGPT sign-in in `auth.json`, read from its unverified `id_token` claims.
+    static func codexAccountEmail(_ data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = json["tokens"] as? [String: Any],
+              let idToken = tokens["id_token"] as? String,
+              let payload = UsageFetcher.parseJWT(idToken)
+        else { return nil }
+        let profile = payload["https://api.openai.com/profile"] as? [String: Any]
+        return self.normalizedEmail((payload["email"] as? String) ?? (profile?["email"] as? String))
+    }
+
+    /// Email reported by `claude auth status --json`.
+    static func claudeAccountEmail(_ data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return self.normalizedEmail(json["email"] as? String)
+    }
+
+    private static func normalizedEmail(_ email: String?) -> String? {
+        let trimmed = email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Provider-specific by design: each CLI reads its own variables that route it to API-key auth, a custom

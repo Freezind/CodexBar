@@ -114,6 +114,12 @@ read_when:
     (which can route to another provider), and pins the built-in OpenAI provider to the ChatGPT login.
   - Claude requires `claude auth status --json` to report `authMethod: claude.ai` on `apiProvider: firstParty`.
   - A refused check counts as an attempt (30-minute cooldown) and logs `error=not-subscription-auth`.
+- Account binding: immediately before launch, the CLI's signed-in email (Codex `auth.json` `id_token`, Claude
+  `claude auth status`) must match the idle snapshot's account email, case-insensitively. A stale credentials file,
+  a CLI login switch, or an account-switching tool can otherwise open a different account's window. A snapshot
+  without an email came from the CLI itself (Claude `/usage`) and is not bound. A mismatch logs
+  `error=account-mismatch`; emails are never logged. It also posts one silent system notification per provider
+  (no emails in the text), repeated only after a later start succeeds.
 - Attempts (successful or failed) are rate-limited to once per 30 minutes per provider, in memory; a success
   triggers a follow-up provider refresh after 20 s so the running window appears in the menu.
 
