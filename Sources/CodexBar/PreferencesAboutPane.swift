@@ -1,4 +1,5 @@
 import AppKit
+import CodexBarCore
 import SwiftUI
 
 @MainActor
@@ -33,6 +34,20 @@ struct AboutPane: View {
 
             self.updatesSection
 
+            // Fork attribution: AIUsageBar is an unofficial fork; upstream links and copyright stay intact below.
+            Section {
+                AboutLinkRow(
+                    icon: "chevron.left.slash.chevron.right",
+                    title: L("link_github"),
+                    url: Self.forkRepositoryURL)
+            } header: {
+                Text(verbatim: AppBrand.displayName)
+            } footer: {
+                Text(verbatim: "Powered by Bonsai · Unofficial fork of CodexBar")
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+            }
+
             Section {
                 AboutLinkRow(
                     icon: "chevron.left.slash.chevron.right",
@@ -42,7 +57,7 @@ struct AboutPane: View {
                 AboutLinkRow(icon: "bird", title: L("link_twitter"), url: "https://twitter.com/steipete")
                 AboutLinkRow(icon: "envelope", title: L("link_email"), url: "mailto:peter@steipete.me")
             } header: {
-                Text(L("section_links"))
+                Text(verbatim: "Based on CodexBar by Peter Steinberger")
             } footer: {
                 Text(L("copyright"))
                     .frame(maxWidth: .infinity)
@@ -124,7 +139,7 @@ struct AboutPane: View {
             }
 
             VStack(spacing: 2) {
-                Text("CodexBar")
+                Text(verbatim: AppBrand.displayName)
                     .font(.title3).bold()
                 Text(String(format: L("version_format"), AppVersion.displayString))
                     .foregroundStyle(.secondary)
@@ -154,8 +169,10 @@ struct AboutPane: View {
             })
     }
 
+    private static let forkRepositoryURL = "https://github.com/Freezind/CodexBar"
+
     private func openProjectHome() {
-        guard let url = URL(string: "https://github.com/steipete/CodexBar") else { return }
+        guard let url = URL(string: Self.forkRepositoryURL) else { return }
         NSWorkspace.shared.open(url)
     }
 }

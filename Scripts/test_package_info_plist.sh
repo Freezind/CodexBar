@@ -27,6 +27,8 @@ AUTO_CHECKS=false
 BUILD_TIMESTAMP=2026-01-01T00:00:00Z
 GIT_COMMIT=test
 APP_TEAM_ID=TESTTEAM
+# shellcheck source=/dev/null
+source "$ROOT/fork.env"
 source "$PLIST_SCRIPT"
 
 if command -v plutil >/dev/null 2>&1; then

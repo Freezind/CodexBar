@@ -6,11 +6,11 @@ struct AppGroupSupportTests {
     @Test
     func `app group identifiers use resolved team-prefixed release and debug variants`() {
         #expect(
-            AppGroupSupport.currentGroupID(teamID: "Y5PE65HELJ", bundleID: "com.steipete.codexbar")
-                == "Y5PE65HELJ.com.steipete.codexbar")
+            AppGroupSupport.currentGroupID(teamID: "Y5PE65HELJ", bundleID: AppBrand.releaseBundleID)
+                == "Y5PE65HELJ.\(AppBrand.releaseBundleID)")
         #expect(
-            AppGroupSupport.currentGroupID(teamID: "ABCDE12345", bundleID: "com.steipete.codexbar.debug")
-                == "ABCDE12345.com.steipete.codexbar.debug")
+            AppGroupSupport.currentGroupID(teamID: "ABCDE12345", bundleID: AppBrand.debugBundleID)
+                == "ABCDE12345.\(AppBrand.debugBundleID)")
         #expect(
             AppGroupSupport.legacyGroupID(for: "com.steipete.codexbar")
                 == "group.com.steipete.codexbar")
