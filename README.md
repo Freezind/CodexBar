@@ -2,6 +2,25 @@
 
 > Every AI coding limit, in your menu bar.
 
+> [!IMPORTANT]
+> **This is an unofficial fork of [steipete/CodexBar](https://github.com/steipete/CodexBar) that will never be merged upstream.**
+>
+> It adds one feature on top of upstream: **opt-in 5-hour session auto-start** for Codex and Claude. When a 5h window is idle
+> or has reset, CodexBar sends one tiny `ping` through the provider's own CLI so the next window starts counting right away.
+> The upstream maintainer has decided not to add recurring automatic prompts to CodexBar
+> ([#3653](https://github.com/steipete/CodexBar/pull/3653)), so this fork keeps the feature permanently and tracks upstream
+> for everything else.
+>
+> - Off by default: Settings → Providers → Codex / Claude → **Auto-start 5h session**.
+> - Subscription only: the ping runs only on a ChatGPT / claude.ai sign-in and never on API keys, so it spends the window
+>   your plan already includes instead of per-request API billing. Details in [docs/refresh-loop.md](docs/refresh-loop.md#session-auto-start-opt-in).
+> - Build from source with `./Scripts/package_app.sh release`. The release badges, Homebrew tap, and download links below
+>   point to the **official** upstream app, which does not include this feature.
+> - Please report issues with this fork **here, not upstream**. All credit for CodexBar goes to
+>   [Peter Steinberger](https://github.com/steipete) and its contributors.
+>
+> You're welcome to use it or fork it! 🙌
+
 [![Latest release](https://img.shields.io/github/v/release/steipete/CodexBar?style=flat-square&color=0a0a0c)](https://github.com/steipete/CodexBar/releases/latest)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-0a0a0c?style=flat-square)](https://github.com/steipete/CodexBar/releases/latest)
 [![Linux desktop](https://img.shields.io/badge/Linux-Qt_6-1793d1?style=flat-square)](Integrations/Linux/README.md)
