@@ -8,21 +8,33 @@ import Foundation
 /// only for the provider's default account (the one the CLI is signed in as), never for token accounts.
 @MainActor
 final class SessionAutoStarter {
-    typealias CommandRunner = @Sendable (_ provider: UsageProvider, _ environment: [String: String]) async throws
-        -> Void
+    /// `expectedAccountEmail` is the idle snapshot's account; the runner refuses to ping a different CLI account.
+    typealias CommandRunner = @Sendable (
+        _ provider: UsageProvider,
+        _ environment: [String: String],
+        _ expectedAccountEmail: String?) async throws -> Void
 
     nonisolated static let prompt = "ping"
     /// Time between a successful start and the follow-up refresh that publishes the running window.
     static let followUpRefreshDelay: Duration = .seconds(20)
     private nonisolated static let commandTimeout: TimeInterval = 120
 
+    /// Surfaces a skipped start the user has to fix; posted once per episode, not on every retry.
+    typealias AccountMismatchNotifier = @MainActor (_ provider: UsageProvider) -> Void
+
     private let runCommand: CommandRunner
+    private let notifyAccountMismatch: AccountMismatchNotifier
     private let logger = CodexBarLog.logger(LogCategories.sessionAutoStart)
     private var lastAttemptAt: [UsageProvider: Date] = [:]
     private var inFlight: Set<UsageProvider> = []
+    private var accountMismatchNotified: Set<UsageProvider> = []
 
-    init(runCommand: @escaping CommandRunner = SessionAutoStarter.runCLI) {
+    init(
+        runCommand: @escaping CommandRunner = SessionAutoStarter.runCLI,
+        notifyAccountMismatch: @escaping AccountMismatchNotifier = SessionAutoStarter.postAccountMismatchNotification)
+    {
         self.runCommand = runCommand
+        self.notifyAccountMismatch = notifyAccountMismatch
     }
 
     nonisolated static func supports(_ provider: UsageProvider) -> Bool {
@@ -51,21 +63,43 @@ final class SessionAutoStarter {
         self.lastAttemptAt[provider] = now
         self.inFlight.insert(provider)
         let env = environment()
+        let expectedAccountEmail = snapshot.accountEmail(for: provider)
         let runCommand = self.runCommand
         self.logger.info("Starting idle session", metadata: ["provider": provider.rawValue])
         return Task { @MainActor [weak self] in
             do {
-                try await runCommand(provider, env)
+                try await runCommand(provider, env, expectedAccountEmail)
                 self?.logger.info("Session started", metadata: ["provider": provider.rawValue])
                 self?.inFlight.remove(provider)
+                self?.accountMismatchNotified.remove(provider)
                 onStarted()
             } catch {
                 self?.logger.warning(
                     "Session auto-start failed",
                     metadata: ["provider": provider.rawValue, "error": Self.logSafeDescription(error)])
                 self?.inFlight.remove(provider)
+                if error as? SessionAutoStartBillingGuard.Failure == .accountMismatch {
+                    self?.noteAccountMismatch(provider)
+                }
             }
         }
+    }
+
+    private func noteAccountMismatch(_ provider: UsageProvider) {
+        guard self.accountMismatchNotified.insert(provider).inserted else { return }
+        self.notifyAccountMismatch(provider)
+    }
+
+    static func postAccountMismatchNotification(_ provider: UsageProvider) {
+        let name = ProviderDescriptorRegistry.descriptor(for: provider).metadata.displayName
+        // A stable identifier replaces an older alert instead of stacking; emails stay out of the text.
+        AppNotifications.shared.post(
+            idPrefix: "session-auto-start-account-\(provider.rawValue)",
+            title: "\(name) 5h session not auto-started",
+            body: "The \(name) CLI is signed in to a different account than the one CodexBar shows. "
+                + "Sign the CLI in to the same account, or refresh CodexBar, to resume auto-start.",
+            soundEnabled: false,
+            identifier: "codexbar-session-auto-start-account-\(provider.rawValue)")
     }
 
     /// Claude's OAuth usage omits `five_hour` while no session is open, so the weekly lane is promoted to primary.
@@ -77,7 +111,11 @@ final class SessionAutoStarter {
 
     /// CLI stderr can echo account details, so failures log only the error category.
     nonisolated static func logSafeDescription(_ error: Error) -> String {
-        if error is SessionAutoStartBillingGuard.Failure { return "not-subscription-auth" }
+        switch error as? SessionAutoStartBillingGuard.Failure {
+        case .notSubscriptionAuth: return "not-subscription-auth"
+        case .accountMismatch: return "account-mismatch"
+        case nil: break
+        }
         return switch error as? SubprocessRunnerError {
         case .binaryNotFound: "binary-not-found"
         case .launchFailed: "launch-failed"
@@ -123,7 +161,11 @@ final class SessionAutoStarter {
         }
     }
 
-    nonisolated static func runCLI(provider: UsageProvider, environment: [String: String]) async throws {
+    nonisolated static func runCLI(
+        provider: UsageProvider,
+        environment: [String: String],
+        expectedAccountEmail: String?) async throws
+    {
         var env = SessionAutoStartBillingGuard.sanitizedEnvironment(environment, for: provider)
         let loginPATH = LoginShellPathCache.shared.current
         env["PATH"] = PathBuilder.effectivePATH(
@@ -141,11 +183,13 @@ final class SessionAutoStarter {
         let workingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexbar-session-auto-start", isDirectory: true)
         try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+        // Checked immediately before launch so the ping runs as the account whose idle window was observed.
         try await Self.requireSubscriptionAuth(
             provider: provider,
             binary: binary,
             environment: env,
-            workingDirectory: workingDirectory)
+            workingDirectory: workingDirectory,
+            expectedAccountEmail: expectedAccountEmail)
         _ = try await SubprocessRunner.run(
             binary: binary,
             arguments: Self.arguments(for: provider, workingDirectory: workingDirectory.path),
@@ -161,10 +205,12 @@ final class SessionAutoStarter {
         provider: UsageProvider,
         binary: String,
         environment: [String: String],
-        workingDirectory: URL) async throws
+        workingDirectory: URL,
+        expectedAccountEmail: String?) async throws
     {
         // Provider-specific by design: each CLI exposes its sign-in method differently.
         let isSubscription: Bool
+        let cliAccountEmail: String?
         if provider == .claude {
             let status = try await SubprocessRunner.run(
                 binary: binary,
@@ -175,12 +221,19 @@ final class SessionAutoStarter {
                 currentDirectoryURL: workingDirectory,
                 acceptsNonZeroExit: true,
                 label: "claude-session-auto-start-auth")
-            isSubscription = SessionAutoStartBillingGuard.isClaudeSubscriptionAuth(Data(status.stdout.utf8))
+            let data = Data(status.stdout.utf8)
+            isSubscription = SessionAutoStartBillingGuard.isClaudeSubscriptionAuth(data)
+            cliAccountEmail = SessionAutoStartBillingGuard.claudeAccountEmail(data)
         } else {
             let url = SessionAutoStartBillingGuard.codexAuthFileURL(environment: environment)
-            isSubscription = (try? Data(contentsOf: url)).map(SessionAutoStartBillingGuard.isCodexSubscriptionAuth)
-                ?? false
+            let data = try? Data(contentsOf: url)
+            isSubscription = data.map(SessionAutoStartBillingGuard.isCodexSubscriptionAuth) ?? false
+            cliAccountEmail = data.flatMap(SessionAutoStartBillingGuard.codexAccountEmail)
         }
         guard isSubscription else { throw SessionAutoStartBillingGuard.Failure.notSubscriptionAuth }
+        guard SessionAutoStartBillingGuard.accountMatches(
+            snapshotEmail: expectedAccountEmail,
+            cliEmail: cliAccountEmail)
+        else { throw SessionAutoStartBillingGuard.Failure.accountMismatch }
     }
 }

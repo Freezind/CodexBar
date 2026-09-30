@@ -113,7 +113,7 @@ struct SessionAutoStarterTests {
     @Test
     func `idle snapshot runs the command once and reports success`() async {
         let recorder = Recorder()
-        let starter = SessionAutoStarter { provider, _ in await recorder.record(provider) }
+        let starter = SessionAutoStarter { provider, _, _ in await recorder.record(provider) }
         var started = 0
         let task = starter.evaluate(
             provider: .codex,
@@ -130,7 +130,7 @@ struct SessionAutoStarterTests {
 
     @Test
     func `failed attempt also honors the cooldown`() async {
-        let starter = SessionAutoStarter { _, _ in throw Failure() }
+        let starter = SessionAutoStarter { _, _, _ in throw Failure() }
         var started = 0
         await starter.evaluate(
             provider: .claude,
@@ -142,9 +142,60 @@ struct SessionAutoStarterTests {
     }
 
     @Test
+    func `account mismatch alerts once until a start succeeds`() async {
+        var alerts: [UsageProvider] = []
+        let starter = SessionAutoStarter(
+            runCommand: { _, _, _ in throw SessionAutoStartBillingGuard.Failure.accountMismatch },
+            notifyAccountMismatch: { alerts.append($0) })
+        let start = Date()
+        await starter.evaluate(
+            provider: .claude, snapshot: Self.idle, environment: { [:] }, now: start, onStarted: {})?.value
+        await starter.evaluate(
+            provider: .claude,
+            snapshot: Self.idle,
+            environment: { [:] },
+            now: start.addingTimeInterval(31 * 60),
+            onStarted: {})?.value
+        #expect(alerts == [.claude])
+    }
+
+    @Test
+    func `other failures do not raise the account alert`() async {
+        var alerts: [UsageProvider] = []
+        let starter = SessionAutoStarter(
+            runCommand: { _, _, _ in throw SessionAutoStartBillingGuard.Failure.notSubscriptionAuth },
+            notifyAccountMismatch: { alerts.append($0) })
+        await starter.evaluate(provider: .codex, snapshot: Self.idle, environment: { [:] }, onStarted: {})?.value
+        #expect(alerts.isEmpty)
+    }
+
+    @Test
     func `unsupported providers never run`() {
-        let starter = SessionAutoStarter { _, _ in Issue.record("unexpected run") }
+        let starter = SessionAutoStarter { _, _, _ in Issue.record("unexpected run") }
         #expect(starter.evaluate(provider: .gemini, snapshot: Self.idle, environment: { [:] }, onStarted: {}) == nil)
+    }
+
+    @Test
+    func `runner receives the idle snapshot account`() async {
+        actor EmailBox {
+            var value: String??
+            func set(_ email: String?) {
+                self.value = .some(email)
+            }
+        }
+        let box = EmailBox()
+        let starter = SessionAutoStarter { _, _, email in await box.set(email) }
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 0, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            updatedAt: Date(),
+            identity: ProviderIdentitySnapshot(
+                providerID: .codex,
+                accountEmail: "idle@example.com",
+                accountOrganization: nil,
+                loginMethod: nil))
+        await starter.evaluate(provider: .codex, snapshot: snapshot, environment: { [:] }, onStarted: {})?.value
+        #expect(await box.value == .some("idle@example.com"))
     }
 
     @Test
@@ -214,6 +265,32 @@ struct SessionAutoStartBillingGuardTests {
         #expect(claude["ANTHROPIC_API_KEY"] == nil)
         #expect(claude["ANTHROPIC_BASE_URL"] == nil)
         #expect(claude["PATH"] == "/usr/bin")
+    }
+
+    @Test
+    func `account binding refuses a different cli account`() {
+        #expect(SessionAutoStartBillingGuard.accountMatches(
+            snapshotEmail: "A@Example.com",
+            cliEmail: " a@example.com "))
+        #expect(!SessionAutoStartBillingGuard.accountMatches(snapshotEmail: "a@example.com", cliEmail: "b@example.com"))
+        #expect(!SessionAutoStartBillingGuard.accountMatches(snapshotEmail: "a@example.com", cliEmail: nil))
+        // A snapshot without an email came from the CLI itself, so there is nothing to diverge from.
+        #expect(SessionAutoStartBillingGuard.accountMatches(snapshotEmail: nil, cliEmail: "b@example.com"))
+        #expect(SessionAutoStartBillingGuard.accountMatches(snapshotEmail: "  ", cliEmail: nil))
+    }
+
+    @Test
+    func `cli account emails are read from auth sources`() {
+        let payload = Data(#"{"email":"Codex@Example.com"}"#.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let authJSON = #"{"auth_mode":"chatgpt","tokens":{"id_token":"e30.\#(payload).sig"}}"#
+        #expect(SessionAutoStartBillingGuard.codexAccountEmail(Self.data(authJSON)) == "codex@example.com")
+        #expect(SessionAutoStartBillingGuard.codexAccountEmail(Self.data(#"{"tokens":{}}"#)) == nil)
+        #expect(SessionAutoStartBillingGuard.claudeAccountEmail(Self.data(
+            #"{"loggedIn":true,"email":"Claude@Example.com"}"#)) == "claude@example.com")
+        #expect(SessionAutoStartBillingGuard.claudeAccountEmail(Self.data(#"{"loggedIn":true}"#)) == nil)
     }
 
     @Test
