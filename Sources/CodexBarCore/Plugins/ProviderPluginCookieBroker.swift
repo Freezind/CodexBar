@@ -58,7 +58,6 @@ public struct ProviderPluginCookieSession: Codable, Equatable, Sendable {
 }
 
 final class ProviderPluginCookieBroker: @unchecked Sendable {
-    typealias Importer = @Sendable (String) throws -> [(header: String, source: String)]
     typealias BatchImporter = @Sendable (String, Int) throws -> [(header: String, source: String)]?
     typealias JarImporter = @Sendable () throws -> [ProviderPluginCookieSession]
 
@@ -75,6 +74,8 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
     private var importBatches: [String: Int] = [:]
     private var exhaustedImports = Set<String>()
     private let lock = NSLock()
+    private let accessFailureLock = NSLock()
+    private var cookieAccessFailure: ProviderFetchClassifiedError?
     private var observed: [String: Issued] = [:]
     private var issuedSessions: [String: Issued] = [:]
     private var visited = Set<String>()
@@ -85,20 +86,20 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
     private var jarCandidates: [ProviderPluginCookieSession]?
     private let persistent: ProviderPluginPersistentCookies?
     private let policy: ProviderPluginCookiePolicy?
+    private let selectedProfile: ProviderPluginSelectedProfile?
 
     convenience init(
         provider: UsageProvider,
         domains: Set<String>,
         context: ProviderFetchContext,
         importer: BatchImporter? = nil,
-        usesCookieJar: Bool = false,
         policy: ProviderPluginCookiePolicy? = nil,
         settingsOverride: ProviderSettingsSnapshot.CookieProviderSettings? = nil)
     {
         let interaction = ProviderInteractionContext.current
         let canImport = policy?.allowsImportAttempt(runtime: context.runtime, interaction: interaction)
             ?? (context.runtime == .app && interaction == .userInitiated)
-        let jarImporter: JarImporter? = if usesCookieJar || policy != nil {
+        let jarImporter: JarImporter? = if policy != nil {
             {
                 guard canImport else { return [] }
                 return try Self.importCookieJars(
@@ -123,17 +124,6 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
             background: ProviderInteractionContext.current != .userInitiated)
     }
 
-    convenience init(
-        provider: UsageProvider,
-        domains: Set<String>,
-        settings: ProviderSettingsSnapshot.CookieProviderSettings,
-        importer: @escaping Importer)
-    {
-        self.init(provider: provider, domains: domains, settings: settings, batches: { domain, batch in
-            try batch == 0 ? importer(domain) : nil
-        })
-    }
-
     init(
         provider: UsageProvider,
         domains: Set<String>,
@@ -142,18 +132,31 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
         jarImporter: JarImporter? = nil,
         policy: ProviderPluginCookiePolicy? = nil,
         background: Bool = false,
-        sessionFileURL: URL? = nil)
+        sessionFileURL: URL? = nil,
+        profileReader: ProviderPluginSelectedProfile.Reader? = nil)
     {
         self.provider = provider
         self.domains = domains
         self.settings = settings
-        self.importer = batches
         #if os(macOS)
+        let importBatch = BrowserCookieAccessGate.operationPreservingAccessContext { (input: (String, Int)) in
+            try batches(input.0, input.1)
+        }
+        self.importer = { try importBatch(($0, $1)) }
         self.jarImporter = jarImporter.map { BrowserCookieAccessGate.operationPreservingAccessContext($0) }
         #else
+        self.importer = batches
         self.jarImporter = jarImporter
         #endif
         self.policy = policy
+        self.selectedProfile = policy.flatMap {
+            $0.selectedProfile ? ProviderPluginSelectedProfile(
+                provider: provider,
+                profile: settings.selectedBrowserProfile,
+                policy: $0,
+                domains: domains,
+                reader: profileReader) : nil
+        }
         self.persistent = policy.flatMap {
             $0.cache == .validatedSingleEntry
                 ? ProviderPluginPersistentCookies(
@@ -169,14 +172,22 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
         self.settings.cookieSource
     }
 
+    func finish(_ result: Result<ProviderPluginResult, Error>) throws -> ProviderPluginResult {
+        try self.lock.withLock {
+            let result = result.mapError { self.preferredFailure(over: $0) }
+            return try self.selectedProfile?.finish(result) ?? result.get()
+        }
+    }
+
     func cookieHeader(domain: String) throws -> String {
         try self.lock.withLock {
             try self.validate(domain)
-            guard self.jarImporter == nil else {
+            guard self.jarImporter == nil, self.selectedProfile == nil else {
                 throw ProviderPluginError.secretAccess("cookie jars do not expose headers")
             }
             if let issued = self.observed[domain] { return issued.session.header }
             guard let session = try self.advance(domain: domain) else {
+                if let failure = self.accessFailureLock.withLock({ self.cookieAccessFailure }) { throw failure }
                 throw ProviderPluginError.secretAccess("no session cookies were found for this domain")
             }
             return session.header
@@ -216,6 +227,45 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
         }
     }
 
+    func preferredFailure(over error: Error) -> Error {
+        guard let classified = error as? ProviderFetchClassifiedError,
+              classified.kind == .missingCredential || classified.kind == .authenticationExpired
+        else { return error }
+        if let failure = self.accessFailureLock.withLock({ self.cookieAccessFailure }) { return failure }
+        return error
+    }
+
+    private func importCandidates<Candidate>(_ operation: () throws -> [Candidate]?) throws -> [Candidate]? {
+        #if os(macOS)
+        return try BrowserCookieAccessGate.withAccessFailureObserver {
+            self.recordAccessFailure(for: $0)
+        } operation: {
+            do {
+                return try operation()
+            } catch let error as BrowserCookieError {
+                guard case .accessDenied = error else { throw error }
+                BrowserCookieAccessGate.recordIfNeeded(error)
+                return []
+            }
+        }
+        #else
+        return try operation()
+        #endif
+    }
+
+    #if os(macOS)
+    private func recordAccessFailure(for browser: Browser) {
+        let permission = browser.usesKeychainForCookieDecryption ? "Keychain permission" : "browser permission"
+        self.accessFailureLock.withLock {
+            self.cookieAccessFailure = ProviderFetchClassifiedError(
+                kind: .permissionDenied,
+                message: "\(browser.displayName) cookie access needs \(permission) — "
+                    + "use Refresh beside Cookie source or Refresh in the provider menu to allow it, "
+                    + "or paste a Cookie header in Manual mode.")
+        }
+    }
+    #endif
+
     private func validate(_ domain: String) throws {
         guard self.domains.contains(domain) else {
             throw ProviderPluginError.secretAccess("cookie domain is not declared")
@@ -227,6 +277,12 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
 
     private func advance(domain: String, cachedOnly: Bool = false) throws -> ProviderPluginCookieSession? {
         self.observed[domain] = nil
+        if let selectedProfile {
+            guard self.settings.cookieSource == .auto else {
+                throw ProviderPluginError.secretAccess("selected profiles require automatic browser cookies")
+            }
+            return try selectedProfile.next(domain: domain, cachedOnly: cachedOnly)
+        }
         if self.settings.cookieSource == .manual {
             // Legacy origin-less headers are pinned to the first selected domain for this fetch.
             let origin = self.settings.manualCookieOrigin ?? self.manualDomain.map { "https://\($0)" }
@@ -241,10 +297,12 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
         }
         if let jarImporter {
             if let persistent {
-                return try persistent.next(domain: domain, cachedOnly: cachedOnly, importer: jarImporter)
+                return try persistent.next(domain: domain, cachedOnly: cachedOnly) {
+                    try self.importCandidates { try jarImporter() } ?? []
+                }
             }
             guard !cachedOnly else { return nil }
-            if self.jarCandidates == nil { self.jarCandidates = try jarImporter() }
+            if self.jarCandidates == nil { self.jarCandidates = try self.importCandidates { try jarImporter() } ?? [] }
             while self.jarCandidates?.isEmpty == false {
                 let candidate = self.jarCandidates!.removeFirst()
                 let records = self.policy.map { $0.selected(candidate.records ?? [], domain: domain) } ?? candidate
@@ -277,7 +335,7 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
             if self.imported[domain]?.isEmpty != false {
                 let batch = self.importBatches[domain, default: 0]
                 self.importBatches[domain] = batch + 1
-                guard let candidates = try self.importer(domain, batch) else {
+                guard let candidates = try self.importCandidates({ try self.importer(domain, batch) }) else {
                     self.exhaustedImports.insert(domain)
                     break
                 }
@@ -354,25 +412,19 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
         #if os(macOS)
         let query = Self.cookieQuery(domain: domain)
         let client = BrowserCookieClient()
-        let order = provider.map { ProviderDefaults.metadata[$0]?.browserCookieOrder ?? Browser.defaultImportOrder }
-            ?? [Browser.chrome]
-        var sessions: [(header: String, source: String)] = []
-        for browser in order.cookieImportCandidates(using: browserDetection) {
-            do {
-                for source in try client.codexBarRecords(matching: query, in: browser) {
-                    let records = source.records.filter { Self.matches(cookieDomain: $0.domain, domain: domain) }
+        let order = BrowserCookieImportSupport.importOrder(for: provider)
+        return try BrowserCookieImportSupport.collectSessions(
+            from: order.cookieImportCandidates(using: browserDetection),
+            missingError: nil,
+            logger: { _ in },
+            load: { browser in
+                try client.codexBarRecords(matching: query, in: browser).compactMap { source in
                     let cookies = Self.cookiesForRequest(
-                        BrowserCookieClient.makeHTTPCookies(records, origin: query.origin), domain: domain)
+                        BrowserCookieClient.makeHTTPCookies(source.records, origin: query.origin), domain: domain)
                     let rawHeader = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-                    if let header = CookieHeaderNormalizer.normalize(rawHeader) {
-                        sessions.append((header, source.label))
-                    }
+                    return CookieHeaderNormalizer.normalize(rawHeader).map { ($0, source.label) }
                 }
-            } catch {
-                BrowserCookieAccessGate.recordIfNeeded(error)
-            }
-        }
-        return sessions
+            })
         #else
         return []
         #endif
@@ -385,7 +437,7 @@ final class ProviderPluginCookieBroker: @unchecked Sendable {
         #if os(macOS)
         let client = BrowserCookieClient()
         let query = BrowserCookieQuery(domains: domains.sorted(), domainMatch: .exact)
-        let order = ProviderDefaults.metadata[provider]?.browserCookieOrder ?? [Browser.chrome]
+        let order = BrowserCookieImportSupport.importOrder(for: provider)
         return try BrowserCookieImportSupport.collectSessions(
             from: order.cookieImportCandidates(using: browserDetection),
             missingError: nil,

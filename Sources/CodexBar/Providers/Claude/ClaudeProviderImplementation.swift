@@ -88,6 +88,15 @@ struct ClaudeProviderImplementation: ProviderImplementation {
 
         let claudeSwapBinding = context.binding(\.claudeSwapEnabled)
         let claudeSwapShowSingleAccountBinding = context.binding(\.claudeSwapShowSingleAccount)
+        let claudeSwapExecutableField = ProviderSettingsFieldDescriptor(
+            id: "claude-swap-executable-path",
+            title: "claude-swap executable",
+            subtitle: "Path to the cswap executable (github.com/realiti4/claude-swap).",
+            kind: .plain,
+            placeholder: "~/.local/bin/cswap",
+            binding: context.binding(\.claudeSwapExecutablePath),
+            actions: [],
+            isVisible: nil)
 
         return [
             .sessionAutoStart(provider: .claude, cliName: "claude", context: context),
@@ -150,6 +159,7 @@ struct ClaudeProviderImplementation: ProviderImplementation {
                 binding: claudeSwapBinding,
                 statusText: { Self.claudeSwapStatusText(store: context.store, settings: context.settings) },
                 actions: [],
+                inlineFields: [claudeSwapExecutableField],
                 isVisible: nil,
                 isEnabled: nil,
                 onChange: nil,
@@ -274,15 +284,6 @@ struct ClaudeProviderImplementation: ProviderImplementation {
                 binding: context.binding(\.claudeAdminAPIKey),
                 actions: [],
                 isVisible: nil),
-            ProviderSettingsFieldDescriptor(
-                id: "claude-swap-executable-path",
-                title: "claude-swap executable",
-                subtitle: "Path to the cswap executable (github.com/realiti4/claude-swap).",
-                kind: .plain,
-                placeholder: "~/.local/bin/cswap",
-                binding: context.binding(\.claudeSwapExecutablePath),
-                actions: [],
-                isVisible: { context.settings.claudeSwapEnabled }),
         ]
     }
 

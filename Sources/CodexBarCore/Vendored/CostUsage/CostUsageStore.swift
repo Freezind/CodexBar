@@ -20,6 +20,42 @@ actor CostUsageStore {
     private final class StoreSerialExecutor: SerialExecutor, @unchecked Sendable {
         private let queue: DispatchQueue
         private static let queueKey = DispatchSpecificKey<ObjectIdentifier>()
+        private static let registryLock = NSLock()
+        private nonisolated(unsafe) static var registry: [String: WeakExecutor] = [:]
+
+        private struct WeakExecutor {
+            weak var value: StoreSerialExecutor?
+        }
+
+        static func shared(for databaseURL: URL) -> StoreSerialExecutor {
+            var location = databaseURL
+            var visited: Set<String> = []
+            while true {
+                let directory = location.deletingLastPathComponent()
+                // Resolve existing parents and follow file links even when their target is missing.
+                // Open retries directory creation and reports errors through the normal store path.
+                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                location = directory.resolvingSymlinksInPath().standardizedFileURL
+                    .appendingPathComponent(location.lastPathComponent)
+                guard visited.insert(location.path).inserted,
+                      let target = try? FileManager.default.destinationOfSymbolicLink(atPath: location.path)
+                else { break }
+                location = URL(fileURLWithPath: target, relativeTo: location.deletingLastPathComponent())
+            }
+            let caseSensitive = try? location.deletingLastPathComponent()
+                .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames
+            let key = caseSensitive == false
+                ? location.path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+                : location.path
+            return Self.registryLock.withLock {
+                if let executor = Self.registry[key]?.value { return executor }
+                Self.registry = Self.registry.filter { $0.value.value != nil }
+                let suffix = String(UInt(bitPattern: key.hashValue), radix: 16).suffix(8)
+                let executor = StoreSerialExecutor(label: "com.steipete.codexbar.cost-usage-store.\(suffix)")
+                Self.registry[key] = WeakExecutor(value: executor)
+                return executor
+            }
+        }
 
         init(label: String) {
             self.queue = DispatchQueue(label: label, qos: .utility)
@@ -28,9 +64,8 @@ actor CostUsageStore {
 
         func enqueue(_ job: consuming ExecutorJob) {
             let unownedJob = UnownedJob(job)
-            let executor = self.asUnownedSerialExecutor()
-            self.queue.async {
-                unownedJob.runSynchronously(on: executor)
+            self.queue.async { [self] in
+                unownedJob.runSynchronously(on: self.asUnownedSerialExecutor())
             }
         }
 
@@ -47,7 +82,14 @@ actor CostUsageStore {
         }
 
         func sync<T>(_ operation: () throws -> T) rethrows -> T {
-            try self.queue.sync(execute: operation)
+            #if DEBUG
+            let hooks = CostUsageStoreTestHooks.current
+            return try self.queue.sync {
+                try CostUsageStoreTestHooks.$current.withValue(hooks, operation: operation)
+            }
+            #else
+            return try self.queue.sync(execute: operation)
+            #endif
         }
     }
 
@@ -80,6 +122,10 @@ actor CostUsageStore {
         parserHash: CodexParserHash.value)
     static let cacheGeneration = "sqlite:\(CostUsageStore.schemaVersion)"
     static let compatiblePredecessorParserHashes: Set<String> = [
+        "029fe80aa98f27e8", // Revision 7 caches retain history during bounded JSON-fallback reparsing.
+        "c61aebb9cf043a72", // Revision 6 ledger caches reparse through the shared ownership router.
+        "4a4c4ef34ce6f037", // Request-ledger accounting uses bounded native parser-revision migration.
+        "04a6361469a4ff77", // Settled orphan scheduling preserves rows, replay buffers, and checkpoints.
         "98de5f52231e524e", // 0.68.0 rows and checkpoints survive sparse priority-day reconciliation.
         "9972dad7f7aeff21", // Direct-fork baseline corrections use bounded parser-revision migration.
         "4dd9e5769818370a", // Linux Priority trace support preserves native rows and checkpoints.
@@ -132,28 +178,18 @@ actor CostUsageStore {
         "8050a4faf4fddb96",
     ]
 
-    /// Test-only crash injection: invoked inside `saveCodexCache`'s transaction after each
-    /// persisted file with the running count, so a crash-safety harness can SIGKILL the
-    /// process at a deterministic mid-save point. Never set in production.
-    nonisolated(unsafe) static var saveCycleCheckpointForTesting: ((Int) -> Void)?
-    /// Test-only interleaving point scoped to one database so parallel store fixtures stay isolated.
-    nonisolated(unsafe) static var identicalContentPreLockCheckpointForTesting: (
-        databaseURL: URL,
-        checkpoint: () -> Void)?
-
-    /// Test-only traversal proof for persisted Codex catch-up reconciliation. Never set in production.
-    nonisolated(unsafe) static var codexCatchUpReconciliationVisitForTesting: (() -> Void)?
-    /// Test-only read failures scoped by database and path. Never set in production.
-    nonisolated(unsafe) static var codexTokenSnapshotReadFailureForTesting: ((URL, String) -> Bool)?
-
-    /// Process-wide serialization keeps every writable store connection on the same queue.
-    /// This matches the scan pipeline's single-writer contract without multiplying executor
-    /// threads when tests or short-lived readers create several store actors.
-    private nonisolated static let sharedExecutor = StoreSerialExecutor(
-        label: "com.steipete.codexbar.cost-usage-store")
+    /// Connections to one canonical database share a serial queue, preserving the single-writer
+    /// contract without letting a busy database stall independent account stores.
+    private nonisolated let executor: StoreSerialExecutor
     nonisolated var unownedExecutor: UnownedSerialExecutor {
-        Self.sharedExecutor.asUnownedSerialExecutor()
+        self.executor.asUnownedSerialExecutor()
     }
+
+    #if DEBUG
+    nonisolated var executorForTesting: AnyObject {
+        self.executor
+    }
+    #endif
 
     nonisolated let databaseURL: URL
     private let expectedSchemaVersion: Int32
@@ -186,6 +222,7 @@ actor CostUsageStore {
         self.databaseURL = root
             .appendingPathComponent("cost-usage", isDirectory: true)
             .appendingPathComponent(Self.databaseFilename, isDirectory: false)
+        self.executor = StoreSerialExecutor.shared(for: self.databaseURL)
         self.expectedSchemaVersion = schemaVersion
         self.expectedParserHash = parserHash
         self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
@@ -203,12 +240,12 @@ actor CostUsageStore {
 }
 
 extension CostUsageStore {
-    /// The shared queue establishes isolation; runtime checks are unreliable for SDK-14 binaries on macOS 15.
+    /// The database queue establishes isolation; runtime checks are unreliable for SDK-14 binaries on macOS 15.
     private nonisolated func syncWithStoreIsolation<T: Sendable>(
         _ operation: (isolated CostUsageStore) throws -> T) rethrows -> T
     {
-        try Self.sharedExecutor.sync {
-            Self.sharedExecutor.checkIsolated()
+        try self.executor.sync {
+            self.executor.checkIsolated()
             typealias Isolated = (isolated CostUsageStore) throws -> T
             typealias Unisolated = (CostUsageStore) throws -> T
             return try withoutActuallyEscaping(operation) { (operation: @escaping Isolated) throws -> T in
@@ -248,13 +285,17 @@ extension CostUsageStore {
                 let persisted = try Self.inReadTransaction(database) {
                     var snapshots: [String: [CostUsageStoreTokenSnapshot]] = [:]
                     for path in paths.sorted() {
-                        if Self.codexTokenSnapshotReadFailureForTesting?(store.databaseURL, path) == true {
+                        #if DEBUG
+                        if CostUsageStoreTestHooks.current
+                            .codexTokenSnapshotReadFailure?(store.databaseURL, path) == true
+                        {
                             throw StoreError.sqlite(SQLITE_IOERR)
                         }
+                        #endif
                         snapshots[path] = try Self.readTokenSnapshots(
                             database, path: path, recorder: store.scopedReadWorkRecorderForTesting)
                         #if DEBUG
-                        if let checkpoint = Self.codexTokenHydrationCheckpointForTesting,
+                        if let checkpoint = CostUsageStoreTestHooks.current.codexTokenHydrationCheckpoint,
                            checkpoint.databaseURL == store.databaseURL
                         {
                             try checkpoint.checkpoint()

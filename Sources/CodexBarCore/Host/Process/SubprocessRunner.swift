@@ -46,10 +46,13 @@ public enum SubprocessRunner {
         qos: .userInitiated,
         attributes: .concurrent)
 
+    @TaskLocal static var timeoutWillFire: (@Sendable () -> Void)?
+
     /// Thread-safe flag for communicating between concurrent tasks (e.g. timeout → caller).
-    private final class KillFlag: @unchecked Sendable {
+    private final class TimeoutState: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false
+        var timer: (any DispatchSourceTimer)?
 
         func set() {
             self.lock.withLock { self.value = true }
@@ -57,18 +60,6 @@ public enum SubprocessRunner {
 
         var isSet: Bool {
             self.lock.withLock { self.value }
-        }
-    }
-
-    private final class TimeoutTimer: @unchecked Sendable {
-        private let timer: any DispatchSourceTimer
-
-        init(timer: any DispatchSourceTimer) {
-            self.timer = timer
-        }
-
-        func cancel() {
-            self.timer.cancel()
         }
     }
 
@@ -157,12 +148,13 @@ public enum SubprocessRunner {
         reapDescendants: Bool = false,
         label: String) async throws -> SubprocessResult
     {
-        guard FileManager.default.isExecutableFile(atPath: binary) else {
+        let executableURL = URL(fileURLWithPath: binary).standardizedFileURL
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw SubprocessRunnerError.binaryNotFound(binary)
         }
 
         let start = Date()
-        let binaryName = URL(fileURLWithPath: binary).lastPathComponent
+        let binaryName = executableURL.lastPathComponent
         func logMetadata(duration: TimeInterval, exitCode: Int32? = nil) -> [String: String] {
             var metadata = ["label": label, "binary": binaryName, "duration_ms": "\(Int(duration * 1000))"]
             if let exitCode { metadata["status"] = "\(exitCode)" }
@@ -173,12 +165,14 @@ public enum SubprocessRunner {
             metadata: ["label": label, "binary": binaryName, "timeout": "\(timeout)"])
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: binary)
+        process.executableURL = executableURL
         process.arguments = arguments
+        var launchEnvironment = environment
+        launchEnvironment["PATH"] = PathBuilder.effectivePATH(purposes: [.tty], env: environment, loginPATH: nil)
         let ownership = reapDescendants ? ProcessOwnershipReaper() : nil
         process.environment = ownership
-            .map { environment.merging([ProcessOwnershipReaper.environmentKey: $0.marker]) { _, new in new } } ??
-            environment
+            .map { launchEnvironment.merging([ProcessOwnershipReaper.environmentKey: $0.marker]) { _, new in new } } ??
+            launchEnvironment
         process.currentDirectoryURL = currentDirectoryURL
 
         let stdoutPipe = Pipe()
@@ -219,22 +213,22 @@ public enum SubprocessRunner {
             await termination.wait()
         }
 
-        let killedByTimeout = KillFlag()
-        let timeoutTimerBox: TimeoutTimer? = if timeout.isFinite {
-            {
-                let timeoutTimer = DispatchSource.makeTimerSource(queue: self.timeoutQueue)
-                timeoutTimer.schedule(deadline: .now() + self.timeoutInterval(timeout))
-                timeoutTimer.setEventHandler {
-                    guard process.isRunning else { return }
-                    killedByTimeout.set()
-                    self.terminateProcess(process, processGroup: processGroup)
-                }
-                timeoutTimer.resume()
-                return TimeoutTimer(timer: timeoutTimer)
-            }()
-        } else {
-            nil
+        let killedByTimeout = TimeoutState()
+        if timeout.isFinite {
+            let timeoutTimer = DispatchSource.makeTimerSource(queue: self.timeoutQueue)
+            timeoutTimer.schedule(deadline: .now() + self.timeoutInterval(timeout))
+            let timeoutWillFire = self.timeoutWillFire
+            timeoutTimer.setEventHandler {
+                timeoutWillFire?()
+                guard process.isRunning else { return }
+                killedByTimeout.set()
+                self.terminateProcess(process, processGroup: processGroup)
+            }
+            killedByTimeout.timer = timeoutTimer
+            timeoutTimer.resume()
         }
+
+        defer { killedByTimeout.timer?.setEventHandler(handler: nil) }
 
         do {
             let exitCode = try await withTaskCancellationHandler {
@@ -243,10 +237,10 @@ public enum SubprocessRunner {
                 try Task.checkCancellation()
                 return code
             } onCancel: {
-                timeoutTimerBox?.cancel()
+                killedByTimeout.timer?.cancel()
                 self.terminateProcess(process, processGroup: processGroup)
             }
-            timeoutTimerBox?.cancel()
+            killedByTimeout.timer?.cancel()
 
             let duration = Date().timeIntervalSince(start)
             // Race guard: the timeout timer may kill the process just before the

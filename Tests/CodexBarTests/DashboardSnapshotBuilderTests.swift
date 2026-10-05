@@ -268,6 +268,13 @@ struct DashboardSnapshotBuilderTests {
                 costUSD: 1.04,
                 modelsUsed: nil,
                 modelBreakdowns: nil)],
+            projects: [CostProjectPayload(
+                name: "Private project",
+                path: "/private/work/project",
+                totalTokens: 1000,
+                totalCostUSD: 1.04,
+                daily: [],
+                modelBreakdowns: nil)],
             totals: nil,
             error: nil)
         let config = CodexBarConfig(providers: [
@@ -291,6 +298,11 @@ struct DashboardSnapshotBuilderTests {
         let windows = try #require(provider["windows"] as? [[String: Any]])
         let credits = try #require(provider["credits"] as? [String: Any])
         let costObject = try #require(provider["cost"] as? [String: Any])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let encoded = try #require(String(data: encoder.encode(snapshot), encoding: .utf8))
+        #expect(!encoded.contains("Private project"))
+        #expect(!encoded.contains("/private/work/project"))
         let display = try #require(provider["display"] as? [String: Any])
 
         #expect(object["schemaVersion"] as? Int == 1)
@@ -805,7 +817,10 @@ struct DashboardSnapshotBuilderTests {
             generatedAt: Date(timeIntervalSince1970: 0),
             refreshInterval: 60,
             codexBarVersion: nil,
-            claudeSwap: DashboardClaudeSwapInput(accounts: account, adapterError: nil, weeklyWorkDays: nil))
+            accountCollections: [.claude: DashboardAccountsInput(
+                accounts: account,
+                adapterError: nil,
+                weeklyWorkDays: nil)])
     }
 
     private func firstClaudeSwapAccount(_ snapshot: DashboardSnapshotPayload) throws -> [String: Any] {

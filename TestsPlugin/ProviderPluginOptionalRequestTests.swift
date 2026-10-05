@@ -90,30 +90,12 @@ struct ProviderPluginOptionalRequestTests {
         #expect(payload.value["optional"] is NSNull)
     }
 
-    @Test(arguments: BundledPluginTestSupport.engines)
-    func `caller cancellation reaches both requests`(engine: ProviderPluginEngineKind) async throws {
-        let calls = RequestCalls()
-        let runtime = try Self.runtime(engine: engine) { request in
-            calls.start()
-            do { try await Task.sleep(for: .seconds(30)) } catch {
-                calls.cancel()
-                throw error
-            }
-            return try Self.response(request, body: "unexpected")
-        }
-        let task = Task { try await runtime.fetchUsage() }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-        while calls.counts.0 < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(calls.counts.0 == 2)
-        task.cancel()
-        await #expect(throws: CancellationError.self) { _ = try await task.value }
-        let cancelledDeadline = ContinuousClock.now.advanced(by: .seconds(10))
-        while calls.counts.1 < 2, ContinuousClock.now < cancelledDeadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(calls.counts.1 == 2)
+    @Test(.timeLimit(.minutes(1)), arguments: BundledPluginTestSupport.engines, [false, true])
+    func `caller cancellation reaches both requests`(
+        engine: ProviderPluginEngineKind, waitingForAdmission: Bool) async throws
+    {
+        try await ProviderPluginCancellationTestSupport.checkCallerCancellation(
+            engine: engine, optionalMethod: "GET", waitingForAdmission: waitingForAdmission)
     }
 
     @Test(.timeLimit(.minutes(1)), arguments: BundledPluginTestSupport.engines, [false, true])

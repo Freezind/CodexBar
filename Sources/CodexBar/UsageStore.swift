@@ -444,6 +444,8 @@ final class UsageStore {
     @ObservationIgnored let hookRateLimiter = HookRateLimiter()
     @ObservationIgnored var sessionAutoStarter = SessionAutoStarter()
     @ObservationIgnored var providerStatusHadIssue: [ProviderInstanceID: Bool] = [:]
+    @ObservationIgnored var providerStatusRequestGeneration: UInt64 = 0
+    @ObservationIgnored var providerStatusPublishedGenerations: [ProviderInstanceID: UInt64] = [:]
     /// Last observed usage fraction (0...1) per account and quota-warning lane, used
     /// to detect upward crossings of a quota_low hook rule's own threshold.
     @ObservationIgnored var quotaLowHookUsage: [QuotaWarningStateKey: Double] = [:]
@@ -657,7 +659,7 @@ final class UsageStore {
     }
 
     func snapshot(for instanceID: ProviderInstanceID) -> UsageSnapshot? {
-        self.snapshots[instanceID]
+        self.profileScopedSnapshot(for: instanceID)
     }
 
     /// The snapshot the menu-bar indicator should render for a provider instance.

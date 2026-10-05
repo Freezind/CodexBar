@@ -9,7 +9,7 @@ extension UsageStore {
             self.widgetVerifiedTokenSnapshots = [:]
             return []
         }
-        let providers = self.enabledProviders().compactMap(\.firstPartyProvider)
+        let providers = self.enabledProviders().compactMap(\.firstPartyProvider).filter(Self.supportsWidgetUsage)
         self.widgetVerifiedTokenSnapshots = self.widgetVerifiedTokenSnapshots.filter { providers.contains($0.key) }
         return providers.flatMap { provider in
             self.widgetAccounts(for: provider, now: now)

@@ -32,6 +32,7 @@ extension ProviderInstanceID {
     public static let moonshot = UsageProvider.moonshot.instanceID
     public static let amp = UsageProvider.amp.instanceID
     public static let t3chat = UsageProvider.t3chat.instanceID
+    public static let langdock = UsageProvider.langdock.instanceID
     public static let ollama = UsageProvider.ollama.instanceID
     public static let synthetic = UsageProvider.synthetic.instanceID
     public static let openrouter = UsageProvider.openrouter.instanceID
@@ -90,6 +91,9 @@ extension ProviderInstanceID {
     public static let vercel = UsageProvider.vercel.instanceID
     public static let llmman = UsageProvider.llmman.instanceID
     public static let xkiro = UsageProvider.xkiro.instanceID
+    public static let museai = UsageProvider.museai.instanceID
+    public static let lithosai = UsageProvider.lithosai.instanceID
+    public static let workbuddy = UsageProvider.workbuddy.instanceID
 }
 
 // swiftformat:enable sortDeclarations

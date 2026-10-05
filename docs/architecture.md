@@ -25,6 +25,8 @@ read_when:
 - Background refresh → `UsageFetcher`/provider probes → `UsageStore` → menu/icon/widgets.
 - Settings toggles feed `SettingsStore` → `UsageStore` refresh cadence + feature flags.
 - Runtime-only provider settings flow through typed, descriptor-registered sections in `ProviderSettingsSnapshot`.
+- Codex cost conversation titles reuse SQLite database discovery per working directory and SQLite home within each
+  enrichment call. The next call resolves paths again, so config edits and new state database versions are picked up.
 
 ## CLI login lifecycle
 - `CodexLoginRunner` and `KiroLoginRunner` resolve their own executable and environment, including Codex home scoping.
@@ -41,6 +43,10 @@ read_when:
 ## Concurrency & platform
 - Swift 6 strict concurrency enabled; prefer Sendable state and explicit MainActor hops.
 - macOS 14+ targeting; avoid deprecated APIs when refactoring.
+- Cost stores share one utility serial executor per canonical database location, including symlinked cache roots and
+  database files. Separate database operations do not share SQLite lock waits. Executors are weakly registered and
+  released with their last store or queued job. Normal app fetches still use the separate serial scan queue;
+  WAL transactions are unchanged.
 
 ## Shared policy ownership
 - `ProviderCatalog` indexes the immutable generated list of app implementations. JavaScript plugins use their own
