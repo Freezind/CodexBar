@@ -4,8 +4,8 @@ import Foundation
 /// Opt-in automation that opens an idle 5-hour session window by sending one minimal prompt through the
 /// provider's own CLI, so the window starts counting without the user opening an agent first.
 ///
-/// The prompt spends a negligible amount of quota by design; that request is what starts the clock. It runs
-/// only for the provider's default account (the one the CLI is signed in as), never for token accounts.
+/// The prompt spends a negligible amount of quota by design; that request is what starts the clock. It always runs
+/// as the CLI's signed-in account, so a token account is eligible only when it is bound to that account by email.
 @MainActor
 final class SessionAutoStarter {
     /// `expectedAccountEmail` is the idle snapshot's account; the runner refuses to ping a different CLI account.

@@ -279,6 +279,48 @@ struct SessionAutoStartBillingGuardTests {
         #expect(SessionAutoStartBillingGuard.accountMatches(snapshotEmail: "  ", cliEmail: nil))
     }
 
+    private static func idleSnapshot(provider: UsageProvider, email: String?) -> UsageSnapshot {
+        UsageSnapshot(
+            primary: RateWindow(usedPercent: 0, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            updatedAt: Date(),
+            identity: ProviderIdentitySnapshot(
+                providerID: provider.instanceID,
+                accountEmail: email,
+                accountOrganization: nil,
+                loginMethod: nil))
+    }
+
+    @Test
+    func `claude token account binds on the email claude reported`() {
+        let fetched = Self.idleSnapshot(provider: .claude, email: "Claude@Example.com")
+        let published = fetched.withAccountLabel("Personal", for: .claude)
+        #expect(SessionAutoStartBillingGuard.tokenAccountCanBind(
+            provider: .claude,
+            fetched: fetched,
+            published: published))
+    }
+
+    @Test
+    func `token account label never stands in for a missing email`() {
+        let fetched = Self.idleSnapshot(provider: .claude, email: nil)
+        let published = fetched.withAccountLabel("me@example.com", for: .claude)
+        #expect(published.accountEmail(for: .claude) == "me@example.com")
+        #expect(!SessionAutoStartBillingGuard.tokenAccountCanBind(
+            provider: .claude,
+            fetched: fetched,
+            published: published))
+    }
+
+    @Test
+    func `token accounts of other providers stay excluded`() {
+        let fetched = Self.idleSnapshot(provider: .codex, email: "codex@example.com")
+        #expect(!SessionAutoStartBillingGuard.tokenAccountCanBind(
+            provider: .codex,
+            fetched: fetched,
+            published: fetched))
+    }
+
     @Test
     func `cli account emails are read from auth sources`() {
         let payload = Data(#"{"email":"Codex@Example.com"}"#.utf8).base64EncodedString()
