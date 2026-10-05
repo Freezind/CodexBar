@@ -759,7 +759,7 @@ extension UsageStore {
         self.evaluateSessionAutoStart(
             provider: provider,
             snapshot: backfilled,
-            isTokenAccountScoped: currentTokenAccount != nil)
+            tokenAccountUsage: currentTokenAccount == nil ? nil : scoped)
         if provider == .codex {
             self.recordCodexHistoricalSampleIfNeeded(snapshot: backfilled)
         }

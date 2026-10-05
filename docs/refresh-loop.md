@@ -96,7 +96,8 @@ read_when:
 ## Session auto-start (opt-in)
 - Codex and Claude each have an "Auto-start 5h session" provider toggle (`sessionAutoStartEnabled` in the provider
   config), off by default.
-- After a successful refresh of the provider's default account (never token accounts), `SessionAutoStartPolicy`
+- After a successful refresh of the provider's default account, or of a Claude token account whose usage reported
+  the account email (see account binding below), `SessionAutoStartPolicy`
   decides whether the session lane reads as idle: Claude's synthetic placeholder lane, an elapsed reset, no reset
   with 0% usage, or 0% usage while the reset is still a full window (±90 s) past the measurement time. Missing
   primary lanes and non-5h lanes never start anything.
@@ -117,7 +118,10 @@ read_when:
 - Account binding: immediately before launch, the CLI's signed-in email (Codex `auth.json` `id_token`, Claude
   `claude auth status`) must match the idle snapshot's account email, case-insensitively. A stale credentials file,
   a CLI login switch, or an account-switching tool can otherwise open a different account's window. A snapshot
-  without an email came from the CLI itself (Claude `/usage`) and is not bound. A mismatch logs
+  without an email came from the CLI itself (Claude `/usage`) and is not bound. Token accounts sign in separately
+  from the CLI (for example a claude.ai `sessionKey`), so only Claude token accounts are eligible, and only when the
+  fetch itself reported the account email; the token account's label never stands in for a missing email. Other
+  providers' token accounts never auto-start. A mismatch logs
   `error=account-mismatch`; emails are never logged. It also posts one silent system notification per provider
   (no emails in the text), repeated only after a later start succeeds.
 - Attempts (successful or failed) are rate-limited to once per 30 minutes per provider, in memory; a success

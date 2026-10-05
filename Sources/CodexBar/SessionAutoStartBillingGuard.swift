@@ -28,6 +28,17 @@ enum SessionAutoStartBillingGuard {
         return self.normalizedEmail(cliEmail) == expected
     }
 
+    /// Token accounts sign in separately from the CLI (Claude's claude.ai session key), so one qualifies only when the
+    /// provider itself reported the account email for `accountMatches` to bind to. The token account's display label
+    /// fills a missing email on the published snapshot and must never stand in for it.
+    static func tokenAccountCanBind(provider: UsageProvider, fetched: UsageSnapshot, published: UsageSnapshot) -> Bool {
+        // Provider-specific by design: only Claude's token-account fetch is known to report the account email.
+        guard provider == .claude,
+              let fetchedEmail = self.normalizedEmail(fetched.accountEmail(for: provider))
+        else { return false }
+        return self.normalizedEmail(published.accountEmail(for: provider)) == fetchedEmail
+    }
+
     /// Email of the ChatGPT sign-in in `auth.json`, read from its unverified `id_token` claims.
     static func codexAccountEmail(_ data: Data) -> String? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
